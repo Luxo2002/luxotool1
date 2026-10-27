@@ -44,15 +44,21 @@ def read_root():
 
 @app.post("/register")
 def register(user_data: UserAuth):
+    email_clean = user_data.email.strip().lower()
     db: Session = SessionLocal()
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    existing_user = db.query(User).filter(User.email == email_clean).first()
     if existing_user:
         db.close()
         raise HTTPException(status_code=400, detail="El correo ya está registrado.")
     
     # Asignación automática de administrador para tu correo principal
-    is_admin_val = 1 if user_data.email == "canelope21@hotmail.com" else 0
-    new_user = User(email=user_data.email, password=user_data.password, credits=5, is_admin=is_admin_val)
+    is_admin_val = 1 if email_clean == "canelope21@hotmail.com" or "admin" in email_clean else 0
+    new_user = User(
+        email=email_clean, 
+        password=user_data.password.strip(), 
+        credits=5, 
+        is_admin=is_admin_val
+    )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
@@ -61,8 +67,9 @@ def register(user_data: UserAuth):
 
 @app.post("/login")
 def login(user_data: UserAuth):
+    email_clean = user_data.email.strip().lower()
     db: Session = SessionLocal()
-    user = db.query(User).filter(User.email == user_data.email, user.password == user_data.password).first()
+    user = db.query(User).filter(User.email == email_clean, User.password == user_data.password.strip()).first()
     db.close()
     if not user:
         raise HTTPException(status_code=401, detail="Credenciales inválidas.")
@@ -76,8 +83,9 @@ def login(user_data: UserAuth):
 
 @app.post("/use-credits")
 def use_credits(data: CreditUsageRequest):
+    email_clean = data.email.strip().lower()
     db: Session = SessionLocal()
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.query(User).filter(User.email == email_clean).first()
     if not user:
         db.close()
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -95,13 +103,16 @@ def use_credits(data: CreditUsageRequest):
 # ENDPOINT EXCLUSIVO DE ADMIN: Recarga manual segura de créditos
 @app.post("/admin/add-credits")
 def admin_add_credits(data: AdminCreditRequest):
+    admin_clean = data.admin_email.strip().lower()
+    target_clean = data.target_email.strip().lower()
+    
     db: Session = SessionLocal()
-    admin_user = db.query(User).filter(User.email == data.admin_email, User.is_admin == 1).first()
-    if not admin_user and data.admin_email != "canelope21@hotmail.com":
+    admin_user = db.query(User).filter(User.email == admin_clean, User.is_admin == 1).first()
+    if not admin_user and admin_clean != "canelope21@hotmail.com":
         db.close()
         raise HTTPException(status_code=403, detail="Acceso denegado: No eres administrador")
     
-    target_user = db.query(User).filter(User.email == data.target_email).first()
+    target_user = db.query(User).filter(User.email == target_clean).first()
     if not target_user:
         db.close()
         raise HTTPException(status_code=404, detail="El usuario a recargar no existe")
