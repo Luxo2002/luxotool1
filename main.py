@@ -13,6 +13,50 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# =========================================================================
+# 🎛️ CONTROL CENTRAL DE SERVICIOS, PRECIOS Y ESTADOS (ONLINE / OFFLINE)
+# Modifica, agrega o apaga servicios aquí directamente sin compilar nada.
+# =========================================================================
+SERVICES_CATALOG = {
+    "Bypass A12+": {
+        "cost": 8,
+        "online": True,
+        "description": "Bypass A12+ autorizado mediante comprobante"
+    },
+    "UNLOCK BOOTLOADER (INFINIX / ITEL / TECNO)": {
+        "cost": 6,
+        "online": True,
+        "description": "Desbloqueo oficial de bootloader por créditos"
+    },
+    "MI ASSISTANT FRP (XIAOMI) [ONLINE]": {
+        "cost": 6,
+        "online": True,
+        "description": "Servicio gestionado mediante conexión remota segura"
+    },
+    "SAMSUNG KG BYPASS [ONLINE]": {
+        "cost": 10,
+        "online": True,
+        "description": "Servicio gestionado mediante conexión remota segura"
+    },
+    "UNLOCKTOOL (RENTA 6 HORAS)": {
+        "cost": 4,
+        "online": True,
+        "description": "Acceso remoto a Unlocktool por 6 hrs"
+    },
+    "TSM TOOL PRO (RENTA 6 HORAS)": {
+        "cost": 4,
+        "online": True,
+        "description": "Acceso remoto a TSM Tool por 6 hrs"
+    },
+    "DFT PRO (RENTA 6 HORAS)": {
+        "cost": 5,
+        "online": True,
+        "description": "Acceso remoto a DFT Pro por 6 hrs"
+    }
+}
+
+DEFAULT_COST = 1
+
 # Modelo de Usuario en Base de Datos
 class User(Base):
     __tablename__ = "users"
@@ -31,7 +75,7 @@ class UserAuth(BaseModel):
 
 class CreditUsageRequest(BaseModel):
     email: str
-    cost: int = 1
+    service_name: str
 
 class AdminCreditRequest(BaseModel):
     admin_email: str
@@ -42,6 +86,11 @@ class AdminCreditRequest(BaseModel):
 def read_root():
     return {"status": "online", "message": "Luxo Tool Pro API is running"}
 
+@app.get("/services")
+def get_services():
+    """Devuelve el catálogo completo de servicios, precios y estado (Online/Offline) para la app"""
+    return SERVICES_CATALOG
+
 @app.post("/register")
 def register(user_data: UserAuth):
     email_clean = user_data.email.strip().lower()
@@ -51,7 +100,6 @@ def register(user_data: UserAuth):
         db.close()
         raise HTTPException(status_code=400, detail="El correo ya está registrado.")
     
-    # Asignación automática de administrador para tu correo principal
     is_admin_val = 1 if email_clean == "canelope21@hotmail.com" or "admin" in email_clean else 0
     new_user = User(
         email=email_clean, 
@@ -84,21 +132,33 @@ def login(user_data: UserAuth):
 @app.post("/use-credits")
 def use_credits(data: CreditUsageRequest):
     email_clean = data.email.strip().lower()
+    
+    # Verificar si el servicio existe en el catálogo del servidor
+    service_info = SERVICES_CATALOG.get(data.service_name)
+    if not service_info:
+        raise HTTPException(status_code=400, detail="El servicio solicitado no existe.")
+    
+    # Validar si el servicio está activo (Online)
+    if not service_info.get("online", True):
+        raise HTTPException(status_code=400, detail="Lo sentimos, este servicio se encuentra OFFLINE temporalmente.")
+    
+    cost = service_info.get("cost", DEFAULT_COST)
+    
     db: Session = SessionLocal()
     user = db.query(User).filter(User.email == email_clean).first()
     if not user:
         db.close()
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    if user.credits < data.cost:
+    if user.credits < cost:
         db.close()
-        raise HTTPException(status_code=400, detail="Créditos insuficientes")
+        raise HTTPException(status_code=400, detail=f"Créditos insuficientes. Este servicio requiere {cost} créditos.")
     
-    user.credits -= data.cost
+    user.credits -= cost
     db.commit()
     db.refresh(user)
     remaining = user.credits
     db.close()
-    return {"success": True, "remaining_credits": remaining}
+    return {"success": True, "remaining_credits": remaining, "cost_charged": cost}
 
 # ENDPOINT EXCLUSIVO DE ADMIN: Recarga manual segura de créditos
 @app.post("/admin/add-credits")
