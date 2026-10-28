@@ -14,8 +14,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # =========================================================================
-# 🎛️ CONTROL CENTRAL DE SERVICIOS, PRECIOS Y ESTADOS (ONLINE / OFFLINE)
-# Modifica, agrega o apaga servicios aquí directamente sin compilar nada.
+# 🎛️ CONTROL CENTRAL DE PRECIOS Y ESTADOS (ONLINE / OFFLINE)
 # =========================================================================
 SERVICES_CATALOG = {
     "Bypass A12+": {
@@ -68,7 +67,7 @@ class User(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Esquemas de Petición Pydantic
+# Esquemas de Petición Pydantic (Obligatorios para que FastAPI acepte los datos)
 class UserAuth(BaseModel):
     email: str
     password: str
@@ -88,19 +87,20 @@ def read_root():
 
 @app.get("/services")
 def get_services():
-    """Devuelve el catálogo completo de servicios, precios y estado (Online/Offline) para la app"""
     return SERVICES_CATALOG
 
 @app.post("/register")
 def register(user_data: UserAuth):
     email_clean = user_data.email.strip().lower()
     db: Session = SessionLocal()
+    
     existing_user = db.query(User).filter(User.email == email_clean).first()
     if existing_user:
         db.close()
         raise HTTPException(status_code=400, detail="El correo ya está registrado.")
     
     is_admin_val = 1 if email_clean == "canelope21@hotmail.com" or "admin" in email_clean else 0
+    
     new_user = User(
         email=email_clean, 
         password=user_data.password.strip(), 
@@ -117,28 +117,35 @@ def register(user_data: UserAuth):
 def login(user_data: UserAuth):
     email_clean = user_data.email.strip().lower()
     db: Session = SessionLocal()
+    
     user = db.query(User).filter(User.email == email_clean, User.password == user_data.password.strip()).first()
-    db.close()
+    
     if not user:
+        db.close()
         raise HTTPException(status_code=401, detail="Credenciales inválidas.")
-    return {
+    
+    if email_clean == "canelope21@hotmail.com" and not user.is_admin:
+        user.is_admin = 1
+        db.commit()
+
+    user_info = {
         "success": True, 
         "message": "Inicio de sesión exitoso", 
         "email": user.email, 
         "credits": user.credits,
         "is_admin": bool(user.is_admin) or user.email == "canelope21@hotmail.com"
     }
+    db.close()
+    return user_info
 
 @app.post("/use-credits")
 def use_credits(data: CreditUsageRequest):
     email_clean = data.email.strip().lower()
     
-    # Verificar si el servicio existe en el catálogo del servidor
     service_info = SERVICES_CATALOG.get(data.service_name)
     if not service_info:
-        raise HTTPException(status_code=400, detail="El servicio solicitado no existe.")
+        raise HTTPException(status_code=400, detail=f"El servicio '{data.service_name}' no existe.")
     
-    # Validar si el servicio está activo (Online)
     if not service_info.get("online", True):
         raise HTTPException(status_code=400, detail="Lo sentimos, este servicio se encuentra OFFLINE temporalmente.")
     
@@ -160,7 +167,6 @@ def use_credits(data: CreditUsageRequest):
     db.close()
     return {"success": True, "remaining_credits": remaining, "cost_charged": cost}
 
-# ENDPOINT EXCLUSIVO DE ADMIN: Recarga manual segura de créditos
 @app.post("/admin/add-credits")
 def admin_add_credits(data: AdminCreditRequest):
     admin_clean = data.admin_email.strip().lower()
