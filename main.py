@@ -22,6 +22,11 @@ SERVICES_CATALOG = {
         "online": True,
         "description": "Bypass A12+ autorizado mediante comprobante"
     },
+    "FRP KEY": {
+        "cost": 10,
+        "online": True,
+        "description": "Desbloqueo rápido mediante FRP Key"
+    },
     "UNLOCK BOOTLOADER (INFINIX / ITEL / TECNO)": {
         "cost": 6,
         "online": True,
@@ -62,7 +67,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     password = Column(String, nullable=False)
-    credits = Column(Integer, default=5)
+    credits = Column(Integer, default=0)
     is_admin = Column(Integer, default=0)
 
 Base.metadata.create_all(bind=engine)
@@ -104,7 +109,7 @@ def register(user_data: UserAuth):
     new_user = User(
         email=email_clean, 
         password=user_data.password.strip(), 
-        credits=5, 
+        credits=0,  # Nuevos usuarios inician con 0 créditos
         is_admin=is_admin_val
     )
     db.add(new_user)
