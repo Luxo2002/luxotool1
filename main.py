@@ -1,4 +1,10 @@
-from fastapi import FastAPI, HTTPException
+import os
+import hmac
+import hashlib
+import time
+import base64
+import requests
+from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
@@ -6,6 +12,64 @@ from sqlalchemy.orm import sessionmaker, Session
 
 # Inicialización de FastAPI para Render
 app = FastAPI(title="Luxo Tool Pro Cloud Backend")
+
+# =========================================================================
+# 🔐 SEGURIDAD: CLAVE SECRETA PARA FIRMAR TOKENS DE SESIÓN
+# Defínela como variable de entorno SECRET_KEY en Render. Si no existe,
+# usa un valor por defecto SOLO para que no truene (cámbialo en producción).
+# =========================================================================
+SECRET_KEY = os.getenv("SECRET_KEY", "cambia-esta-clave-en-render-env-vars")
+
+# Token de Telegram: AHORA SOLO VIVE AQUÍ, EN EL SERVIDOR. Ya no va dentro
+# del .exe que se distribuye, así nadie puede extraerlo del cliente.
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8966225068:AAFwTooudiSuJY3b6Eztof_ftaAm5htb8E4")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "8236514362")
+
+
+def enviar_alerta_telegram(mensaje: str):
+    if not TELEGRAM_BOT_TOKEN or not ADMIN_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": ADMIN_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}, timeout=5)
+    except Exception as e:
+        print(f"Error enviando alerta a Telegram: {e}")
+
+
+def crear_token(email: str, is_admin: bool, horas_validez: int = 12) -> str:
+    """Crea un token firmado (email.expiración.firma). No requiere guardar nada en base de datos."""
+    expira = int(time.time()) + horas_validez * 3600
+    payload = f"{email}:{int(is_admin)}:{expira}"
+    firma = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    token_crudo = f"{payload}:{firma}"
+    return base64.urlsafe_b64encode(token_crudo.encode()).decode()
+
+
+def verificar_token(token: str):
+    """Devuelve (email, is_admin) si el token es válido, o lanza 401 si no."""
+    try:
+        decodificado = base64.urlsafe_b64decode(token.encode()).decode()
+        email, is_admin_str, expira_str, firma = decodificado.split(":")
+        payload = f"{email}:{is_admin_str}:{expira_str}"
+        firma_esperada = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(firma, firma_esperada):
+            raise ValueError("Firma inválida")
+        if int(expira_str) < int(time.time()):
+            raise ValueError("Token expirado")
+        return email, bool(int(is_admin_str))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Sesión inválida o expirada. Vuelve a iniciar sesión.")
+
+
+def requerir_admin(authorization: str = Header(default=None)):
+    """Dependencia de FastAPI: exige un token válido de un usuario admin en el header Authorization."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Falta el token de sesión (header Authorization).")
+    token = authorization.split(" ", 1)[1]
+    email, is_admin = verificar_token(token)
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Acceso denegado: no eres administrador.")
+    return email
 
 # Configuración de Base de Datos SQLite en Render
 DATABASE_URL = "sqlite:///./users.db"
@@ -82,9 +146,14 @@ class CreditUsageRequest(BaseModel):
     service_name: str
 
 class AdminCreditRequest(BaseModel):
-    admin_email: str
     target_email: str
     amount: int
+
+
+class PaymentNotifyRequest(BaseModel):
+    email: str
+    amount: str
+    binance_id: str
 
 @app.get("/")
 def read_root():
@@ -104,7 +173,8 @@ def register(user_data: UserAuth):
         db.close()
         raise HTTPException(status_code=400, detail="El correo ya está registrado.")
     
-    is_admin_val = 1 if email_clean == "canelope21@hotmail.com" or "admin" in email_clean else 0
+    # 🔒 Antes: cualquiera que pusiera "admin" en su correo se volvía admin. Corregido.
+    is_admin_val = 1 if email_clean == "canelope21@hotmail.com" else 0
     
     new_user = User(
         email=email_clean, 
@@ -133,12 +203,16 @@ def login(user_data: UserAuth):
         user.is_admin = 1
         db.commit()
 
+    is_admin_final = bool(user.is_admin) or user.email == "canelope21@hotmail.com"
+    token = crear_token(user.email, is_admin_final)
+
     user_info = {
         "success": True, 
         "message": "Inicio de sesión exitoso", 
         "email": user.email, 
         "credits": user.credits,
-        "is_admin": bool(user.is_admin) or user.email == "canelope21@hotmail.com"
+        "is_admin": is_admin_final,
+        "token": token
     }
     db.close()
     return user_info
@@ -172,17 +246,22 @@ def use_credits(data: CreditUsageRequest):
     db.close()
     return {"success": True, "remaining_credits": remaining, "cost_charged": cost}
 
+@app.post("/notify-payment")
+def notify_payment(data: PaymentNotifyRequest):
+    """El cliente llama aquí en vez de hablarle directo a Telegram.
+    Así el TELEGRAM_BOT_TOKEN nunca sale del servidor."""
+    mensaje = f"💳 *AVISO DE PAGO*\nCorreo: {data.email}\nCantidad: {data.amount}\nBinance ID: {data.binance_id}"
+    enviar_alerta_telegram(mensaje)
+    return {"success": True}
+
+
 @app.post("/admin/add-credits")
-def admin_add_credits(data: AdminCreditRequest):
-    admin_clean = data.admin_email.strip().lower()
+def admin_add_credits(data: AdminCreditRequest, admin_email: str = Depends(requerir_admin)):
+    # admin_email ahora viene del TOKEN verificado por el servidor, no de lo que mande el cliente.
+    # Ya no se puede falsificar enviando cualquier correo en el body.
     target_clean = data.target_email.strip().lower()
-    
+
     db: Session = SessionLocal()
-    admin_user = db.query(User).filter(User.email == admin_clean, User.is_admin == 1).first()
-    if not admin_user and admin_clean != "canelope21@hotmail.com":
-        db.close()
-        raise HTTPException(status_code=403, detail="Acceso denegado: No eres administrador")
-    
     target_user = db.query(User).filter(User.email == target_clean).first()
     if not target_user:
         db.close()
