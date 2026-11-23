@@ -61,6 +61,16 @@ def verificar_token(token: str):
         raise HTTPException(status_code=401, detail="Sesión inválida o expirada. Vuelve a iniciar sesión.")
 
 
+def requerir_usuario(authorization: str = Header(default=None)) -> str:
+    """Dependencia de FastAPI: exige un token válido de CUALQUIER usuario logueado
+    (a diferencia de requerir_admin, no necesita ser administrador). Devuelve su email."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Debes iniciar sesión de nuevo.")
+    token = authorization.split(" ", 1)[1]
+    email, _ = verificar_token(token)
+    return email
+
+
 def requerir_admin(authorization: str = Header(default=None)):
     """Dependencia de FastAPI: exige un token válido de un usuario admin en el header Authorization."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -142,7 +152,6 @@ class UserAuth(BaseModel):
     password: str
 
 class CreditUsageRequest(BaseModel):
-    email: str
     service_name: str
 
 class AdminCreditRequest(BaseModel):
@@ -218,9 +227,9 @@ def login(user_data: UserAuth):
     return user_info
 
 @app.post("/use-credits")
-def use_credits(data: CreditUsageRequest):
-    email_clean = data.email.strip().lower()
-    
+def use_credits(data: CreditUsageRequest, email_clean: str = Depends(requerir_usuario)):
+    # 🔒 email_clean ahora viene del TOKEN verificado, no de lo que mande el cliente.
+    # Ya nadie puede descontarle créditos a otro usuario solo sabiendo su correo.
     service_info = SERVICES_CATALOG.get(data.service_name)
     if not service_info:
         raise HTTPException(status_code=400, detail=f"El servicio '{data.service_name}' no existe.")
